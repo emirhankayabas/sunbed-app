@@ -33,7 +33,7 @@ export async function POST(request: Request) {
     );
   }
 
-  await recordKioskResponse({
+  const { id } = await recordKioskResponse({
     professionId: result.data.professionId,
     professionName: result.data.professionName,
     comparisons: result.data.comparisons,
@@ -42,5 +42,5 @@ export async function POST(request: Request) {
     completedAt: new Date(result.data.completedAt),
   });
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, id });
 }

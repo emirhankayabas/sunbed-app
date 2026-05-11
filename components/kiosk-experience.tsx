@@ -53,6 +53,12 @@ export function KioskExperience({
     "idle",
   );
   const [selectedSunbedId, setSelectedSunbedId] = useState<string | null>(null);
+  const [completedResponseId, setCompletedResponseId] = useState<string | null>(
+    null,
+  );
+  const [completedWinnerSunbedId, setCompletedWinnerSunbedId] = useState<
+    string | null
+  >(null);
   const selectionLockRef = useRef(false);
 
   const sunbedsById = useMemo(
@@ -69,6 +75,8 @@ export function KioskExperience({
     setStartedAt(null);
     setSaveStatus("idle");
     setSelectedSunbedId(null);
+    setCompletedResponseId(null);
+    setCompletedWinnerSunbedId(null);
     selectionLockRef.current = false;
   }
 
@@ -123,6 +131,7 @@ export function KioskExperience({
     setSaveStatus("saving");
 
     let responseOk = false;
+    let responseId: string | null = null;
 
     try {
       const response = await fetch("/api/kiosk/responses", {
@@ -139,10 +148,18 @@ export function KioskExperience({
       });
 
       responseOk = response.ok;
+      if (responseOk) {
+        const payload = (await response.json().catch(() => null)) as
+          | { id?: string }
+          | null;
+        responseId = payload?.id ?? null;
+      }
     } catch {
       responseOk = false;
     }
 
+    setCompletedResponseId(responseId);
+    setCompletedWinnerSunbedId(nextState.finalWinnerSunbedId);
     setSaveStatus(responseOk ? "idle" : "error");
     selectionLockRef.current = false;
     setScreen("thanks");
@@ -185,7 +202,14 @@ export function KioskExperience({
         )}
 
         {screen === "thanks" && (
-          <ThanksScreen saveStatus={saveStatus} onReset={resetExperience} />
+          <ThanksScreen
+            saveStatus={saveStatus}
+            onReset={resetExperience}
+            responseId={completedResponseId}
+            professionId={selectedProfession?.id ?? null}
+            professionName={selectedProfession?.name ?? null}
+            finalWinnerSunbedId={completedWinnerSunbedId}
+          />
         )}
       </section>
     </main>
@@ -450,9 +474,17 @@ type FeedbackPhase = "prompt" | "submitting" | "submitted";
 function ThanksScreen({
   saveStatus,
   onReset,
+  responseId,
+  professionId,
+  professionName,
+  finalWinnerSunbedId,
 }: {
   saveStatus: "idle" | "saving" | "error";
   onReset: () => void;
+  responseId: string | null;
+  professionId: string | null;
+  professionName: string | null;
+  finalWinnerSunbedId: string | null;
 }) {
   const classNames = getThanksScreenClassNames();
   const [phase, setPhase] = useState<FeedbackPhase>("prompt");
@@ -508,7 +540,13 @@ function ThanksScreen({
       const response = await fetch("/api/kiosk/feedback", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: trimmed }),
+        body: JSON.stringify({
+          message: trimmed,
+          ...(responseId ? { responseId } : {}),
+          ...(professionId ? { professionId } : {}),
+          ...(professionName ? { professionName } : {}),
+          ...(finalWinnerSunbedId ? { finalWinnerSunbedId } : {}),
+        }),
       });
 
       if (!response.ok) {

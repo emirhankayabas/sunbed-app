@@ -32,7 +32,10 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { getAdminSunbedsPaginationLink } from "@/lib/admin-pagination-link";
+import {
+  getAdminFeedbacksPaginationLink,
+  getAdminSunbedsPaginationLink,
+} from "@/lib/admin-pagination-link";
 import { isAdminAuthenticated } from "@/lib/admin-session";
 import { paginateItems } from "@/lib/pagination";
 import { getAdminDashboardData } from "@/lib/repository";
@@ -40,11 +43,12 @@ import { cn } from "@/lib/utils";
 
 export const runtime = "nodejs";
 const sunbedsPageSize = 8;
+const feedbacksPageSize = 10;
 
 export default async function AdminPage({
   searchParams,
 }: {
-  searchParams: Promise<{ sunbedsPage?: string }>;
+  searchParams: Promise<{ sunbedsPage?: string; feedbacksPage?: string }>;
 }) {
   await connection();
 
@@ -79,12 +83,17 @@ export default async function AdminPage({
     );
   }
 
-  const { professions, sunbeds, summary } = dashboardData;
-  const { sunbedsPage } = await searchParams;
+  const { professions, sunbeds, summary, feedbacks } = dashboardData;
+  const { sunbedsPage, feedbacksPage } = await searchParams;
   const paginatedSunbeds = paginateItems(
     sunbeds,
     Number(sunbedsPage ?? 1),
     sunbedsPageSize,
+  );
+  const paginatedFeedbacks = paginateItems(
+    feedbacks,
+    Number(feedbacksPage ?? 1),
+    feedbacksPageSize,
   );
 
   return (
@@ -105,10 +114,14 @@ export default async function AdminPage({
           </form>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <MetricCard label="Toplam katılım" value={summary.totalResponses} />
           <MetricCard label="Meslek sayısı" value={summary.totalProfessions} />
           <MetricCard label="Şezlong sayısı" value={summary.totalSunbeds} />
+          <MetricCard
+            label="Geri bildirim sayısı"
+            value={summary.totalFeedbacks}
+          />
         </div>
 
         <div className="mt-6 grid gap-6 lg:grid-cols-2">
@@ -244,10 +257,41 @@ export default async function AdminPage({
                 totalPages={paginatedSunbeds.totalPages}
                 hasPrevious={paginatedSunbeds.hasPrevious}
                 hasNext={paginatedSunbeds.hasNext}
+                getLink={(targetPage) =>
+                  getAdminSunbedsPaginationLink(targetPage, {
+                    feedbacksPage: paginatedFeedbacks.page,
+                  })
+                }
               />
             </CardContent>
           </Card>
         </div>
+
+        <Card className="mt-6 rounded-xl">
+          <CardHeader>
+            <CardTitle>Kullanıcı değerlendirmeleri</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <FeedbackList items={paginatedFeedbacks.items} />
+            {paginatedFeedbacks.totalItems > 0 && (
+              <div className="mt-3 text-sm text-muted-foreground">
+                {paginatedFeedbacks.totalItems} değerlendirme · sayfa{" "}
+                {paginatedFeedbacks.page}/{paginatedFeedbacks.totalPages}
+              </div>
+            )}
+            <PaginationControls
+              page={paginatedFeedbacks.page}
+              totalPages={paginatedFeedbacks.totalPages}
+              hasPrevious={paginatedFeedbacks.hasPrevious}
+              hasNext={paginatedFeedbacks.hasNext}
+              getLink={(targetPage) =>
+                getAdminFeedbacksPaginationLink(targetPage, {
+                  sunbedsPage: paginatedSunbeds.page,
+                })
+              }
+            />
+          </CardContent>
+        </Card>
       </section>
     </main>
   );
@@ -344,11 +388,13 @@ function PaginationControls({
   totalPages,
   hasPrevious,
   hasNext,
+  getLink,
 }: {
   page: number;
   totalPages: number;
   hasPrevious: boolean;
   hasNext: boolean;
+  getLink: (page: number) => { href: string; scroll: false };
 }) {
   if (totalPages <= 1) {
     return null;
@@ -357,7 +403,7 @@ function PaginationControls({
   return (
     <div className="mt-4 flex items-center justify-between gap-3">
       <Link
-        {...getAdminSunbedsPaginationLink(page - 1)}
+        {...getLink(page - 1)}
         aria-disabled={!hasPrevious}
         className={cn(
           buttonVariants({ variant: "outline", size: "sm" }),
@@ -370,7 +416,7 @@ function PaginationControls({
         {page} / {totalPages}
       </span>
       <Link
-        {...getAdminSunbedsPaginationLink(page + 1)}
+        {...getLink(page + 1)}
         aria-disabled={!hasNext}
         className={cn(
           buttonVariants({ variant: "outline", size: "sm" }),
@@ -380,5 +426,87 @@ function PaginationControls({
         Sonraki
       </Link>
     </div>
+  );
+}
+
+function FeedbackList({
+  items,
+}: {
+  items: Array<{
+    id: string;
+    message: string;
+    createdAt: string;
+    professionName?: string;
+    selectedSunbed?: { id: string; title: string; imagePath: string };
+  }>;
+}) {
+  if (items.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        Henüz değerlendirme girilmemiş.
+      </p>
+    );
+  }
+
+  const formatter = new Intl.DateTimeFormat("tr-TR", {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+
+  return (
+    <ul className="space-y-3">
+      {items.map((item) => (
+        <li
+          key={item.id}
+          className="grid grid-cols-[64px_1fr] gap-3 rounded-lg border p-3"
+        >
+          {item.selectedSunbed && item.selectedSunbed.imagePath ? (
+            <ImagePreviewDialog
+              imagePath={item.selectedSunbed.imagePath}
+              title={item.selectedSunbed.title}
+            >
+              <button
+                type="button"
+                className="relative h-14 w-16 overflow-hidden rounded-md bg-muted outline-none transition hover:ring-2 hover:ring-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+              >
+                <Image
+                  src={item.selectedSunbed.imagePath}
+                  alt={item.selectedSunbed.title}
+                  fill
+                  sizes="128px"
+                  className="object-contain p-1"
+                />
+              </button>
+            </ImagePreviewDialog>
+          ) : (
+            <div className="flex h-14 w-16 items-center justify-center rounded-md bg-muted text-[10px] text-muted-foreground">
+              Seçim yok
+            </div>
+          )}
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-muted-foreground">
+              <span>{formatter.format(new Date(item.createdAt))}</span>
+              {item.professionName && (
+                <>
+                  <span aria-hidden>·</span>
+                  <span className="font-medium text-foreground">
+                    {item.professionName}
+                  </span>
+                </>
+              )}
+              {item.selectedSunbed && (
+                <>
+                  <span aria-hidden>·</span>
+                  <span>Seçim: {item.selectedSunbed.title}</span>
+                </>
+              )}
+            </div>
+            <p className="mt-1 text-sm whitespace-pre-wrap break-words">
+              {item.message}
+            </p>
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }

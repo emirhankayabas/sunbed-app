@@ -5,7 +5,8 @@
       "Bash(npx eslint *)",
       "Bash(findstr \"??\")",
       "Bash(xargs wc -l)",
-      "Bash(node *)"
+      "Bash(node *)",
+      "Bash(npm test *)"
     ]
   }
 }

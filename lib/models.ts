@@ -40,6 +40,10 @@ export type DbResponse = {
 export type DbFeedback = {
   _id: ObjectId;
   message: string;
+  responseId?: string;
+  professionId?: string;
+  professionName?: string;
+  finalWinnerSunbedId?: string;
   createdAt: Date;
 };
 

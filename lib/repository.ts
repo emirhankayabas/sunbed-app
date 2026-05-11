@@ -16,6 +16,7 @@ export type DashboardSummary = {
   totalResponses: number;
   totalProfessions: number;
   totalSunbeds: number;
+  totalFeedbacks: number;
   professionBreakdown: Array<{ professionName: string; count: number }>;
   finalWinnerBreakdown: Array<{
     sunbedId: string;
@@ -24,6 +25,18 @@ export type DashboardSummary = {
     count: number;
     percentage: number;
   }>;
+};
+
+export type FeedbackDto = {
+  id: string;
+  message: string;
+  createdAt: string;
+  professionName?: string;
+  selectedSunbed?: {
+    id: string;
+    title: string;
+    imagePath: string;
+  };
 };
 
 export async function getCollections() {
@@ -52,33 +65,153 @@ export async function getKioskConfig(): Promise<KioskConfig> {
 
 export async function getAdminDashboardData() {
   const { professions, sunbeds } = await getCollections();
-  const [professionDocs, sunbedDocs, summary] = await Promise.all([
+  const [professionDocs, sunbedDocs, summary, feedbacks] = await Promise.all([
     professions.find({}).sort({ sortOrder: 1, name: 1 }).toArray(),
     sunbeds.find({}).sort({ sortOrder: 1, title: 1 }).toArray(),
     getDashboardSummary(),
+    getRecentFeedbacks(),
   ]);
 
   return {
     professions: professionDocs.map(toProfessionDto),
     sunbeds: sunbedDocs.map(toSunbedDto),
     summary,
+    feedbacks,
   };
 }
 
+const feedbackBackfillWindowMs = 30 * 60 * 1000;
+
+export async function getRecentFeedbacks(limit = 200): Promise<FeedbackDto[]> {
+  const { feedbacks, responses, sunbeds } = await getCollections();
+  const docs = await feedbacks
+    .find({})
+    .sort({ createdAt: -1 })
+    .limit(limit)
+    .toArray();
+
+  if (docs.length === 0) {
+    return [];
+  }
+
+  const needsBackfill = docs.filter((doc) => !doc.finalWinnerSunbedId);
+  let responsesInWindow: Array<{
+    createdAt: Date;
+    professionName: string;
+    finalWinnerSunbedId: string;
+  }> = [];
+
+  if (needsBackfill.length > 0) {
+    const oldestFeedback = docs[docs.length - 1].createdAt;
+    const newestFeedback = docs[0].createdAt;
+    const windowStart = new Date(
+      oldestFeedback.getTime() - feedbackBackfillWindowMs,
+    );
+
+    responsesInWindow = await responses
+      .find({
+        createdAt: { $gte: windowStart, $lte: newestFeedback },
+      })
+      .project<{
+        createdAt: Date;
+        professionName: string;
+        finalWinnerSunbedId: string;
+      }>({ createdAt: 1, professionName: 1, finalWinnerSunbedId: 1, _id: 0 })
+      .sort({ createdAt: 1 })
+      .toArray();
+  }
+
+  const resolved = docs.map((doc) => {
+    if (doc.finalWinnerSunbedId) {
+      return {
+        doc,
+        finalWinnerSunbedId: doc.finalWinnerSunbedId,
+        professionName: doc.professionName,
+      };
+    }
+
+    const cutoff = doc.createdAt.getTime();
+    const windowFloor = cutoff - feedbackBackfillWindowMs;
+    let match: (typeof responsesInWindow)[number] | undefined;
+    for (const response of responsesInWindow) {
+      const time = response.createdAt.getTime();
+      if (time > cutoff) break;
+      if (time < windowFloor) continue;
+      match = response;
+    }
+
+    return {
+      doc,
+      finalWinnerSunbedId: match?.finalWinnerSunbedId,
+      professionName: match?.professionName,
+    };
+  });
+
+  const sunbedIds = Array.from(
+    new Set(
+      resolved
+        .map((item) => item.finalWinnerSunbedId)
+        .filter((id): id is string => Boolean(id) && ObjectId.isValid(id ?? "")),
+    ),
+  );
+
+  const sunbedDocs =
+    sunbedIds.length === 0
+      ? []
+      : await sunbeds
+          .find({ _id: { $in: sunbedIds.map((id) => new ObjectId(id)) } })
+          .toArray();
+  const sunbedsById = new Map(
+    sunbedDocs.map((sunbed) => [sunbed._id.toString(), sunbed]),
+  );
+
+  return resolved.map((item) => {
+    const sunbed = item.finalWinnerSunbedId
+      ? sunbedsById.get(item.finalWinnerSunbedId)
+      : undefined;
+
+    return {
+      id: item.doc._id.toString(),
+      message: item.doc.message,
+      createdAt: item.doc.createdAt.toISOString(),
+      professionName: item.professionName,
+      selectedSunbed: sunbed
+        ? {
+            id: sunbed._id.toString(),
+            title: sunbed.title,
+            imagePath: sunbed.imagePath,
+          }
+        : item.finalWinnerSunbedId
+          ? {
+              id: item.finalWinnerSunbedId,
+              title: "Silinmiş şezlong",
+              imagePath: "",
+            }
+          : undefined,
+    };
+  });
+}
+
 export async function getDashboardSummary(): Promise<DashboardSummary> {
-  const { professions, sunbeds, responses } = await getCollections();
-  const [totalResponses, totalProfessions, totalSunbeds, professionGroups] =
-    await Promise.all([
-      responses.countDocuments({}),
-      professions.countDocuments({}),
-      sunbeds.countDocuments({}),
-      responses
-        .aggregate<{ _id: string; count: number }>([
-          { $group: { _id: "$professionName", count: { $sum: 1 } } },
-          { $sort: { count: -1, _id: 1 } },
-        ])
-        .toArray(),
-    ]);
+  const { professions, sunbeds, responses, feedbacks } = await getCollections();
+  const [
+    totalResponses,
+    totalProfessions,
+    totalSunbeds,
+    totalFeedbacks,
+    professionGroups,
+  ] = await Promise.all([
+    responses.countDocuments({}),
+    professions.countDocuments({}),
+    sunbeds.countDocuments({}),
+    feedbacks.countDocuments({}),
+    responses
+      .aggregate<{ _id: string; count: number }>([
+        { $group: { _id: "$professionName", count: { $sum: 1 } } },
+        { $sort: { count: -1, _id: 1 } },
+      ])
+      .toArray(),
+  ]);
 
   const [winnerGroups, sunbedDocs] = await Promise.all([
     responses
@@ -97,6 +230,7 @@ export async function getDashboardSummary(): Promise<DashboardSummary> {
     totalResponses,
     totalProfessions,
     totalSunbeds,
+    totalFeedbacks,
     professionBreakdown: professionGroups.map((group) => ({
       professionName: group._id,
       count: group.count,
@@ -242,22 +376,37 @@ export async function deleteSunbed(id: string) {
   return result;
 }
 
-export async function recordKioskResponse(input: Omit<DbResponse, "_id" | "createdAt">) {
+export async function recordKioskResponse(
+  input: Omit<DbResponse, "_id" | "createdAt">,
+) {
   const { responses } = await getCollections();
+  const _id = new ObjectId();
 
   await responses.insertOne({
-    _id: new ObjectId(),
+    _id,
     ...input,
     createdAt: new Date(),
   });
+
+  return { id: _id.toString() };
 }
 
-export async function recordKioskFeedback(message: string) {
+export async function recordKioskFeedback(input: {
+  message: string;
+  responseId?: string;
+  professionId?: string;
+  professionName?: string;
+  finalWinnerSunbedId?: string;
+}) {
   const { feedbacks } = await getCollections();
 
   await feedbacks.insertOne({
     _id: new ObjectId(),
-    message,
+    message: input.message,
+    responseId: input.responseId,
+    professionId: input.professionId,
+    professionName: input.professionName,
+    finalWinnerSunbedId: input.finalWinnerSunbedId,
     createdAt: new Date(),
   });
 }
